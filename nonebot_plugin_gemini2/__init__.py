@@ -58,18 +58,19 @@ gemini_cmd = on_alconna(
     Alconna(
         "gemini",
         Subcommand(
+            "chat",
+            Args["problem", str],
+            Args["image?", Image],
+            Option("-t|--text", help_text="回复文本时是否输出文本"),
+            Option("-c|--conversation", help_text="是否持续对话"),
+            help_text="文本生成",
+        ),
+        Subcommand(
             "gen",
             Args["problem", str],
             Args["image?", Image],
             Option("-t|--text", help_text="回复文本时是否输出文本"),
             help_text="图片生成",
-        ),
-        Subcommand(
-            "chat",
-            Args["problem", str],
-            Args["image?", Image],
-            Option("-t|--text", help_text="回复文本时是否输出文本"),
-            help_text="文本生成",
         ),
         Subcommand(
             "search",
@@ -111,7 +112,7 @@ else:
 
 
 @gemini_cmd.assign("chat")
-async def handle_gemini_chat(problem: Match[str], image: Match[Image], text=Query("chat.text")):
+async def handle_gemini_chat(problem: Match[str], image: Match[Image], text=Query("chat.text"), conversation=Query("chat.conversation")):
     problem_text = problem.result
     parts = []
     parts.append(Part.from_text(text=problem_text))
@@ -125,11 +126,16 @@ async def handle_gemini_chat(problem: Match[str], image: Match[Image], text=Quer
 
     current_text, current_msg_id = await chat_handler(contents, not text.available)
 
+    if not conversation.available:
+        await gemini_cmd.finish()
+
     await UniMessage.text("你可以回复响应消息内容来持续对话，一轮对话最多7次对话").send()
 
     @waiter(["message"], keep_session=True)
     async def receive(msg: UniMsg):
         reply = msg[Reply, 0]
+        if not reply:
+            await UniMessage.text("对话已结束").finish()
         if current_msg_id == str(reply.id):
             return msg
 
@@ -141,10 +147,9 @@ async def handle_gemini_chat(problem: Match[str], image: Match[Image], text=Quer
                 contents.append({"role": "user", "parts": [Part.from_text(text=continue_text)]})
                 current_text, current_msg_id = await chat_handler(contents, not text.available)
         else:
-            await UniMessage.text("对话已结束").send()
-            break
+            await UniMessage.text("对话已结束").finish()
     else:
-        await UniMessage.text("对话已结束").send()
+        await UniMessage.text("对话已结束").finish()
 
 
 async def chat_handler(contents: ContentListUnion | ContentListUnionDict, send_image: bool) -> tuple[str, str]:
