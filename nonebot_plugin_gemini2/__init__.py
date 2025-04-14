@@ -9,6 +9,7 @@ require("nonebot_plugin_apscheduler")
 require("nonebot_plugin_waiter")
 
 import os
+import traceback
 from google.genai.types import (
     ContentListUnion,
     ContentListUnionDict,
@@ -37,7 +38,7 @@ from nonebot_plugin_alconna import (
     Option,
 )
 from nonebot_plugin_alconna.builtins.extensions.reply import ReplyMergeExtension
-from nonebot_plugin_htmlrender import md_to_pic
+from nonebot_plugin_htmlrender import md_to_pic, text_to_pic
 from nonebot_plugin_apscheduler import scheduler
 from nonebot_plugin_uninfo import UniSession, Session
 from nonebot_plugin_waiter import waiter
@@ -68,6 +69,7 @@ gemini_cmd = on_alconna(
         Subcommand(
             "gen",
             Option("-t|--text", help_text="回复文本时是否输出文本"),
+            Option("-p|--picture", help_text="是否仅输出图片"),
             Args["problem", str],
             Args["image?", Image],
             help_text="图片生成",
@@ -124,7 +126,10 @@ async def handle_gemini_chat(problem: Match[str], image: Match[Image], text=Quer
 
     contents = [{"role": "user", "parts": parts}]
 
-    current_text, current_msg_id = await chat_handler(contents, not text.available)
+    try:
+        current_text, current_msg_id = await chat_handler(contents, not text.available)
+    except Exception as _:
+        await UniMessage.image(raw=await text_to_pic(traceback.format_exc())).finish()
 
     if not conversation.available:
         await gemini_cmd.finish()
@@ -145,7 +150,10 @@ async def handle_gemini_chat(problem: Match[str], image: Match[Image], text=Quer
             if continue_text.strip():
                 contents.append({"role": "model", "parts": [Part.from_text(text=current_text)]})
                 contents.append({"role": "user", "parts": [Part.from_text(text=continue_text)]})
-                current_text, current_msg_id = await chat_handler(contents, not text.available)
+                try:
+                    current_text, current_msg_id = await chat_handler(contents, not text.available)
+                except Exception as _:
+                    await UniMessage.image(raw=await text_to_pic(traceback.format_exc())).finish()
         else:
             await UniMessage.text("对话已结束").finish()
     else:
@@ -189,6 +197,7 @@ async def handle_gemini_gen(
     problem: Match[str],
     image: Match[Image],
     text=Query("gen.text"),
+    picture=Query("gen.picture"),
     session: Session = UniSession(),
 ):
     if plugin_config.gemini_gen_max_count >= 0:
@@ -212,33 +221,41 @@ async def handle_gemini_gen(
         url = str(image_content.url)
         data = await _HTTP_CLIENT.get(url)
         parts.append(Part.from_bytes(data=data.content, mime_type="image/jpeg"))
+    
+    if picture.available:
+        response_modalities=["Image"]
+    else:
+        response_modalities=["Text", "Image"]
 
-    response = await _GEMINI_CLIENT.aio.models.generate_content(
-        model=plugin_config.gemini_gen_model,
-        contents=[{"role": "user", "parts": parts}],
-        config=GenerateContentConfig(
-            response_modalities=["Text", "Image"],
-            safety_settings=[
-                SafetySetting(category=HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=HarmBlockThreshold.OFF),
-                SafetySetting(category=HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=HarmBlockThreshold.OFF),
-                SafetySetting(category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=HarmBlockThreshold.OFF),
-                SafetySetting(category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=HarmBlockThreshold.OFF),
-                SafetySetting(category=HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold=HarmBlockThreshold.OFF),
-            ],
-        ),
-    )
+    try:
+        response = await _GEMINI_CLIENT.aio.models.generate_content(
+            model=plugin_config.gemini_gen_model,
+            contents=[{"role": "user", "parts": parts}],
+            config=GenerateContentConfig(
+                response_modalities=response_modalities,
+                safety_settings=[
+                    SafetySetting(category=HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=HarmBlockThreshold.OFF),
+                    SafetySetting(category=HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=HarmBlockThreshold.OFF),
+                    SafetySetting(category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=HarmBlockThreshold.OFF),
+                    SafetySetting(category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=HarmBlockThreshold.OFF),
+                    SafetySetting(category=HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold=HarmBlockThreshold.OFF),
+                ],
+            ),
+        )
 
-    for part in response.candidates[0].content.parts:  # type: ignore
-        if part.text is not None:
-            if not text.available:
-                await UniMessage.image(raw=await md_to_pic(part.text)).send()
-            else:
-                await UniMessage.text(part.text).send()
-        if part.inline_data is not None:
-            await UniMessage.image(
-                raw=part.inline_data.data,
-                mimetype=part.inline_data.mime_type,
-            ).send()
+        for part in response.candidates[0].content.parts:  # type: ignore
+            if part.text is not None:
+                if not text.available:
+                    await UniMessage.image(raw=await md_to_pic(part.text)).send()
+                else:
+                    await UniMessage.text(part.text).send()
+            if part.inline_data is not None:
+                await UniMessage.image(
+                    raw=part.inline_data.data,
+                    mimetype=part.inline_data.mime_type,
+                ).send()
+    except Exception as _:
+        await UniMessage.image(raw=await text_to_pic(traceback.format_exc())).finish()
 
 
 @gemini_cmd.assign("search")
@@ -270,30 +287,32 @@ async def handle_gemini_search(
         url = str(image_content.url)
         data = await _HTTP_CLIENT.get(url)
         parts.append(Part.from_bytes(data=data.content, mime_type="image/jpeg"))
+    try:
+        response = await _GEMINI_CLIENT.aio.models.generate_content(
+            model=plugin_config.gemini_model,
+            contents=[{"role": "user", "parts": parts}],
+            config=GenerateContentConfig(
+                system_instruction=plugin_config.gemini_prompt,
+                response_modalities=["Text"],
+                tools=[Tool(google_search=GoogleSearch())],
+                safety_settings=[
+                    SafetySetting(category=HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=HarmBlockThreshold.OFF),
+                    SafetySetting(category=HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=HarmBlockThreshold.OFF),
+                    SafetySetting(category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=HarmBlockThreshold.OFF),
+                    SafetySetting(category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=HarmBlockThreshold.OFF),
+                    SafetySetting(category=HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold=HarmBlockThreshold.OFF),
+                ],
+            ),
+        )
 
-    response = await _GEMINI_CLIENT.aio.models.generate_content(
-        model=plugin_config.gemini_model,
-        contents=[{"role": "user", "parts": parts}],
-        config=GenerateContentConfig(
-            system_instruction=plugin_config.gemini_prompt,
-            response_modalities=["Text"],
-            tools=[Tool(google_search=GoogleSearch())],
-            safety_settings=[
-                SafetySetting(category=HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=HarmBlockThreshold.OFF),
-                SafetySetting(category=HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=HarmBlockThreshold.OFF),
-                SafetySetting(category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=HarmBlockThreshold.OFF),
-                SafetySetting(category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=HarmBlockThreshold.OFF),
-                SafetySetting(category=HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold=HarmBlockThreshold.OFF),
-            ],
-        ),
-    )
-
-    for part in response.candidates[0].content.parts:  # type: ignore
-        if part.text is not None:
-            if not text.available:
-                await UniMessage.image(raw=await md_to_pic(part.text, width=1000)).send()
-            else:
-                await UniMessage.text(part.text).send()
+        for part in response.candidates[0].content.parts:  # type: ignore
+            if part.text is not None:
+                if not text.available:
+                    await UniMessage.image(raw=await md_to_pic(part.text, width=1000)).send()
+                else:
+                    await UniMessage.text(part.text).send()
+    except Exception as _:
+        await UniMessage.image(raw=await text_to_pic(traceback.format_exc())).finish()
 
 
 async def save_search_count():
