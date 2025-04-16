@@ -26,6 +26,7 @@ from nonebot.plugin import PluginMetadata
 from nonebot_plugin_alconna import (
     Alconna,
     Args,
+    Audio,
     Image,
     Match,
     Query,
@@ -69,7 +70,6 @@ gemini_cmd = on_alconna(
         Subcommand(
             "gen",
             Option("-t|--text", help_text="回复文本时是否输出文本"),
-            Option("-p|--picture", help_text="是否仅输出图片"),
             Args["problem", str],
             Args["image?", Image],
             help_text="图片生成",
@@ -80,6 +80,13 @@ gemini_cmd = on_alconna(
             Args["problem", str],
             Args["image?", Image],
             help_text="通过搜索生成文本",
+        ),
+        Subcommand(
+            "listen",
+            Option("-t|--text", help_text="回复文本时是否输出文本"),
+            Args["problem", str],
+            Args["audio", Audio],
+            help_text="分析音频输出文本",
         ),
     ),
     extensions=[ReplyMergeExtension()],
@@ -99,6 +106,7 @@ _HTTP_CLIENT = AsyncClient()
 
 saerch_count_file = store.get_config_file("nonebot_plugin_gemini2", "search_count.json")
 gen_count_file = store.get_config_file("nonebot_plugin_gemini2", "gen_count.json")
+listen_count_file = store.get_config_file("nonebot_plugin_gemini2", "listen_count.json")
 
 if saerch_count_file.exists():
     json_text = saerch_count_file.read_text()
@@ -111,6 +119,12 @@ if gen_count_file.exists():
     gen_count_dict: dict[str, int] = json.loads(json_text if json_text else "{}")
 else:
     gen_count_dict = {}
+
+if listen_count_file.exists():
+    json_text = listen_count_file.read_text()
+    listen_count_dict: dict[str, int] = json.loads(json_text if json_text else "{}")
+else:
+    listen_count_dict = {}
 
 
 @gemini_cmd.assign("chat")
@@ -197,7 +211,6 @@ async def handle_gemini_gen(
     problem: Match[str],
     image: Match[Image],
     text=Query("gen.text"),
-    picture=Query("gen.picture"),
     session: Session = UniSession(),
 ):
     if plugin_config.gemini_gen_max_count >= 0:
@@ -208,7 +221,7 @@ async def handle_gemini_gen(
         else:
             await UniMessage.text(f"今日剩余图片生成次数{plugin_config.gemini_gen_max_count - count - 1}").send()
         if user_id not in bot.config.superusers:
-            logger.info(f"user {user_id} search count: {count}")
+            logger.info(f"user {user_id} generate count: {count}")
             gen_count_dict[user_id] = count + 1
             await save_gen_count()
         else:
@@ -222,17 +235,12 @@ async def handle_gemini_gen(
         data = await _HTTP_CLIENT.get(url)
         parts.append(Part.from_bytes(data=data.content, mime_type="image/jpeg"))
     
-    if picture.available:
-        response_modalities=["Image"]
-    else:
-        response_modalities=["Text", "Image"]
-
     try:
         response = await _GEMINI_CLIENT.aio.models.generate_content(
             model=plugin_config.gemini_gen_model,
             contents=[{"role": "user", "parts": parts}],
             config=GenerateContentConfig(
-                response_modalities=response_modalities,
+                response_modalities=["Text", "Image"],
                 safety_settings=[
                     SafetySetting(category=HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=HarmBlockThreshold.OFF),
                     SafetySetting(category=HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=HarmBlockThreshold.OFF),
@@ -313,6 +321,63 @@ async def handle_gemini_search(
                     await UniMessage.text(part.text).send()
     except Exception as _:
         await UniMessage.image(raw=await text_to_pic(traceback.format_exc())).finish()
+
+
+@gemini_cmd.assign("listen")
+async def handle_gemini_listen(
+    bot: Bot,
+    problem: Match[str],
+    audio: Match[Audio],
+    text=Query("search.text"),
+    session: Session = UniSession(),
+):
+    if plugin_config.gemini_audio_max_count >= 0:
+        user_id = session.user.id
+        count = search_count_dict.get(user_id, 0)
+        if count >= plugin_config.gemini_audio_max_count:
+            await UniMessage.text("聆听次数已达上限").finish()
+        else:
+            await UniMessage.text(f"今日剩余聆听次数{plugin_config.gemini_audio_max_count - count - 1}").send()
+        if user_id not in bot.config.superusers:
+            logger.info(f"user {user_id} listen count: {count}")
+            search_count_dict[user_id] = count + 1
+            await save_search_count()
+        else:
+            logger.info(f"user {user_id} is superuser, not count")
+    problem_text = problem.result
+    parts = []
+    parts.append(Part.from_text(text=problem_text))
+    if audio.available:
+        audio_content = audio.result
+        url = str(audio_content.url)
+        data = await _HTTP_CLIENT.get(url)
+        parts.append(Part.from_bytes(data=data.content, mime_type="audio/mp3"))
+    try:
+        response = await _GEMINI_CLIENT.aio.models.generate_content(
+            model=plugin_config.gemini_model,
+            contents=[{"role": "user", "parts": parts}],
+            config=GenerateContentConfig(
+                system_instruction=plugin_config.gemini_prompt,
+                response_modalities=["Text"],
+                safety_settings=[
+                    SafetySetting(category=HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=HarmBlockThreshold.OFF),
+                    SafetySetting(category=HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=HarmBlockThreshold.OFF),
+                    SafetySetting(category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=HarmBlockThreshold.OFF),
+                    SafetySetting(category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=HarmBlockThreshold.OFF),
+                    SafetySetting(category=HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold=HarmBlockThreshold.OFF),
+                ],
+            ),
+        )
+
+        for part in response.candidates[0].content.parts:  # type: ignore
+            if part.text is not None:
+                if not text.available:
+                    await UniMessage.image(raw=await md_to_pic(part.text, width=1000)).send()
+                else:
+                    await UniMessage.text(part.text).send()
+    except Exception as _:
+        await UniMessage.image(raw=await text_to_pic(traceback.format_exc())).finish()
+    
 
 
 async def save_search_count():

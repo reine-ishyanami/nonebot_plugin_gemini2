@@ -16,6 +16,8 @@ class Config(BaseModel):
     """每人每天调用搜索最大次数，超管不受限制"""
     gemini_gen_max_count: int = 3
     """每人每天调用图片生成最大次数，超管不受限制"""
+    gemini_audio_max_count: int = 3
+    """每人每天调用音频分析最大次数，超管不受限制"""
     proxy: str = "http://127.0.0.1:7890"
     """代理地址"""
 
