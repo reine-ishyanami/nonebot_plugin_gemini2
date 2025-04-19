@@ -26,6 +26,7 @@ from nonebot.plugin import PluginMetadata
 from nonebot_plugin_alconna import (
     Alconna,
     Args,
+    At,
     Audio,
     Image,
     Match,
@@ -58,6 +59,7 @@ __plugin_meta__ = PluginMetadata(
 
 gemini_cmd = on_alconna(
     Alconna(
+        Args["at?", At],
         "gemini",
         Subcommand(
             "chat",
