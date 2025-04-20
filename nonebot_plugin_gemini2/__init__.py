@@ -26,7 +26,6 @@ from nonebot.plugin import PluginMetadata
 from nonebot_plugin_alconna import (
     Alconna,
     Args,
-    At,
     Audio,
     Image,
     Match,
@@ -59,7 +58,6 @@ __plugin_meta__ = PluginMetadata(
 
 gemini_cmd = on_alconna(
     Alconna(
-        Args["at?", At],
         "gemini",
         Subcommand(
             "chat",
@@ -130,7 +128,9 @@ else:
 
 
 @gemini_cmd.assign("chat")
-async def handle_gemini_chat(problem: Match[str], image: Match[Image], text=Query("chat.text"), conversation=Query("chat.conversation")):
+async def handle_gemini_chat(
+    problem: Match[str], image: Match[Image], text=Query("chat.text"), conversation=Query("chat.conversation")
+):
     problem_text = problem.result
     parts = []
     parts.append(Part.from_text(text=problem_text))
@@ -154,13 +154,19 @@ async def handle_gemini_chat(problem: Match[str], image: Match[Image], text=Quer
 
     @waiter(["message"], keep_session=True)
     async def receive(msg: UniMsg):
-        reply = msg[Reply, 0]
+        reply = msg.get(Reply)
         if not reply:
-            await UniMessage.text("对话已结束").finish()
-        if current_msg_id == str(reply.id):
+            logger.info("receive empty reply, stop conversation")
+            return 0
+        if current_msg_id == str(reply[0].id):
             return msg
+        else:
+            logger.info("receive unexpected reply, stop conversation")
+            return 0
 
     async for msg in receive(timeout=120, retry=5, prompt=""):
+        if msg == 0:
+            await UniMessage.text("对话已结束").finish()
         if msg is not None:
             continue_text = msg[Text, 0].text
             if continue_text.strip():
@@ -170,8 +176,8 @@ async def handle_gemini_chat(problem: Match[str], image: Match[Image], text=Quer
                     current_text, current_msg_id = await chat_handler(contents, not text.available)
                 except Exception as _:
                     await UniMessage.image(raw=await text_to_pic(traceback.format_exc())).finish()
-        else:
-            await UniMessage.text("对话已结束").finish()
+            continue
+        await UniMessage.text("输入超时，对话结束").finish()
     else:
         await UniMessage.text("对话已结束").finish()
 
@@ -236,7 +242,7 @@ async def handle_gemini_gen(
         url = str(image_content.url)
         data = await _HTTP_CLIENT.get(url)
         parts.append(Part.from_bytes(data=data.content, mime_type="image/jpeg"))
-    
+
     try:
         response = await _GEMINI_CLIENT.aio.models.generate_content(
             model=plugin_config.gemini_gen_model,
@@ -246,9 +252,15 @@ async def handle_gemini_gen(
                 safety_settings=[
                     SafetySetting(category=HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=HarmBlockThreshold.OFF),
                     SafetySetting(category=HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=HarmBlockThreshold.OFF),
-                    SafetySetting(category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=HarmBlockThreshold.OFF),
-                    SafetySetting(category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=HarmBlockThreshold.OFF),
-                    SafetySetting(category=HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold=HarmBlockThreshold.OFF),
+                    SafetySetting(
+                        category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=HarmBlockThreshold.OFF
+                    ),
+                    SafetySetting(
+                        category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=HarmBlockThreshold.OFF
+                    ),
+                    SafetySetting(
+                        category=HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold=HarmBlockThreshold.OFF
+                    ),
                 ],
             ),
         )
@@ -308,9 +320,15 @@ async def handle_gemini_search(
                 safety_settings=[
                     SafetySetting(category=HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=HarmBlockThreshold.OFF),
                     SafetySetting(category=HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=HarmBlockThreshold.OFF),
-                    SafetySetting(category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=HarmBlockThreshold.OFF),
-                    SafetySetting(category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=HarmBlockThreshold.OFF),
-                    SafetySetting(category=HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold=HarmBlockThreshold.OFF),
+                    SafetySetting(
+                        category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=HarmBlockThreshold.OFF
+                    ),
+                    SafetySetting(
+                        category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=HarmBlockThreshold.OFF
+                    ),
+                    SafetySetting(
+                        category=HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold=HarmBlockThreshold.OFF
+                    ),
                 ],
             ),
         )
@@ -364,9 +382,15 @@ async def handle_gemini_listen(
                 safety_settings=[
                     SafetySetting(category=HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=HarmBlockThreshold.OFF),
                     SafetySetting(category=HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=HarmBlockThreshold.OFF),
-                    SafetySetting(category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=HarmBlockThreshold.OFF),
-                    SafetySetting(category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=HarmBlockThreshold.OFF),
-                    SafetySetting(category=HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold=HarmBlockThreshold.OFF),
+                    SafetySetting(
+                        category=HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=HarmBlockThreshold.OFF
+                    ),
+                    SafetySetting(
+                        category=HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=HarmBlockThreshold.OFF
+                    ),
+                    SafetySetting(
+                        category=HarmCategory.HARM_CATEGORY_CIVIC_INTEGRITY, threshold=HarmBlockThreshold.OFF
+                    ),
                 ],
             ),
         )
@@ -379,7 +403,6 @@ async def handle_gemini_listen(
                     await UniMessage.text(part.text).send()
     except Exception as _:
         await UniMessage.image(raw=await text_to_pic(traceback.format_exc())).finish()
-    
 
 
 async def save_search_count():
